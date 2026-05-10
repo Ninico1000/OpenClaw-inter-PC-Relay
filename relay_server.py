@@ -25,7 +25,7 @@ from typing import Any, Optional
 import uvicorn
 from fastapi import Depends, FastAPI, HTTPException, Query, WebSocket, WebSocketDisconnect
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 # ---------------------------------------------------------------------------
 # Konfiguration
@@ -107,8 +107,8 @@ class RunCodeRequest(BaseModel):
     """Anfrage zum Ausführen von Code auf einem Agent."""
 
     language: str  # python | bash | shell | powershell
-    code: str
-    timeout: int = 30  # Sekunden
+    code: str = Field(..., max_length=100_000)  # max. 100 KB
+    timeout: int = Field(default=30, ge=1, le=300)  # 1–300 Sekunden
     cwd: Optional[str] = None
 
     model_config = {

@@ -28,6 +28,7 @@ import asyncio
 import io
 import logging
 import os
+import platform
 import queue
 import subprocess
 import tempfile
@@ -111,8 +112,7 @@ def _speak(text: str, piper_voice: str) -> None:
             stderr=subprocess.DEVNULL,
         )
 
-        import platform as _plat
-        system = _plat.system().lower()
+        system = platform.system().lower()
 
         if system == "linux":
             # aplay liest raw PCM direkt
@@ -496,7 +496,7 @@ async def run() -> None:
         try:
             audio_q.put_nowait(chunk)
         except queue.Full:
-            pass  # Bei vollem Queue einfach verwerfen
+            log.warning("Audio-Queue voll – Frame verworfen (Mikrofon zu schnell?)")
 
     loop = asyncio.get_running_loop()
 
@@ -516,14 +516,14 @@ async def run() -> None:
                 wake_detected = False
                 while not wake_detected:
                     try:
+                        chunk = audio_q.get_nowait()
+                        wake_detected = processor._wake_detector.detect(chunk)
                         # Kurz yield damit asyncio andere Tasks bearbeiten kann
                         await asyncio.sleep(0)
 
-                        chunk = audio_q.get_nowait()
-                        wake_detected = processor._wake_detector.detect(chunk)
-
                     except queue.Empty:
-                        await asyncio.sleep(0.02)
+                        # 5 ms warten wenn Queue leer – reduziert CPU-Last deutlich
+                        await asyncio.sleep(0.005)
                     except asyncio.CancelledError:
                         log.info("Voice-Loop abgebrochen (Wake-Word-Phase).")
                         return
