@@ -1,0 +1,37 @@
+# Neo Relay Client – Python-Abhängigkeiten
+# Installation: pip install -r requirements.txt
+#
+# Hinweise:
+#   - torch wird für openwakeword benötigt (CPU-Version reicht)
+#   - webrtcvad kann auf Windows Compiler-Abhängigkeiten haben;
+#     Alternative: pip install webrtcvad-wheels
+#   - faster-whisper lädt beim ersten Start das Modell herunter (~150 MB für "base")
+
+# WebSocket-Verbindung zum Relay-Server
+websockets>=12.0
+
+# Umgebungsvariablen aus .env
+python-dotenv>=1.0.0
+
+# HTTP-Calls an OpenClaw/Neo
+requests>=2.31.0
+
+# Mikrofon-Aufnahme
+sounddevice>=0.4.6
+numpy>=1.24.0
+
+# Sprach-Transkription
+faster-whisper>=1.0.0
+
+# Wake-Word-Erkennung
+# Custom-Modelle: .onnx-Datei über WAKE_WORD_MODEL=pfad/zu/modell.onnx
+openwakeword>=0.6.0
+
+# Voice Activity Detection (optional, Fallback auf Energie-Schwelle)
+# Bei Windows-Kompilierungsproblemen stattdessen: webrtcvad-wheels
+webrtcvad>=2.0.10
+
+# PyTorch – wird von openwakeword benötigt (CPU reicht, kein CUDA nötig)
+# Für explizite CPU-only Installation:
+# pip install torch --index-url https://download.pytorch.org/whl/cpu
+torch>=2.0.0
