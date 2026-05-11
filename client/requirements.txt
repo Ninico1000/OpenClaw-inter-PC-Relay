@@ -6,6 +6,7 @@
 #   - webrtcvad kann auf Windows Compiler-Abhängigkeiten haben;
 #     Alternative: pip install webrtcvad-wheels
 #   - faster-whisper lädt beim ersten Start das Modell herunter (~150 MB für "base")
+#   - mss + Pillow für screenshot-Aktion; psutil für system_info / get_processes
 
 # WebSocket-Verbindung zum Relay-Server
 websockets>=12.0
@@ -35,3 +36,10 @@ webrtcvad>=2.0.10
 # Für explizite CPU-only Installation:
 # pip install torch --index-url https://download.pytorch.org/whl/cpu
 torch>=2.0.0
+
+# PC-Zugriff: Systeminformationen und Prozesse
+psutil>=5.9.0
+
+# PC-Zugriff: Screenshot (plattformübergreifend, keine GUI-Abhängigkeit)
+mss>=9.0.0
+Pillow>=10.0.0

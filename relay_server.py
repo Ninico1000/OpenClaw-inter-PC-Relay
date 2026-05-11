@@ -25,7 +25,7 @@ from typing import Any, Optional
 import uvicorn
 from fastapi import Depends, FastAPI, HTTPException, Query, WebSocket, WebSocketDisconnect
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 # ---------------------------------------------------------------------------
 # Konfiguration
@@ -107,8 +107,8 @@ class RunCodeRequest(BaseModel):
     """Anfrage zum Ausführen von Code auf einem Agent."""
 
     language: str  # python | bash | shell | powershell
-    code: str
-    timeout: int = 30  # Sekunden
+    code: str = Field(..., max_length=100_000)  # max. 100 KB
+    timeout: int = Field(default=30, ge=1, le=300)  # 1–300 Sekunden
     cwd: Optional[str] = None
 
     model_config = {
@@ -134,6 +134,43 @@ class OpenAppRequest(BaseModel):
             "example": {"app": "notepad.exe", "args": []}
         }
     }
+
+
+class ReadFileRequest(BaseModel):
+    """Anfrage zum Lesen einer Datei auf einem Agent."""
+
+    path: str
+    encoding: str = "utf-8"
+    max_bytes: int = Field(default=5_242_880, ge=1, le=5_242_880)  # max. 5 MB
+
+
+class WriteFileRequest(BaseModel):
+    """Anfrage zum Schreiben einer Datei auf einem Agent."""
+
+    path: str
+    content: str = Field(..., max_length=5_242_880)
+    mode: str = Field(default="w", pattern="^[wa]$")
+    encoding: str = "utf-8"
+
+
+class ListDirectoryRequest(BaseModel):
+    """Anfrage zum Auflisten eines Verzeichnisses auf einem Agent."""
+
+    path: str = "."
+    pattern: Optional[str] = None
+
+
+class ScreenshotRequest(BaseModel):
+    """Anfrage für einen Screenshot auf einem Agent."""
+
+    format: str = Field(default="png", pattern="^(png|jpeg)$")
+    quality: int = Field(default=85, ge=1, le=100)
+
+
+class ProcessesRequest(BaseModel):
+    """Anfrage für die Prozessliste eines Agents."""
+
+    filter_name: Optional[str] = None
 
 
 # ---------------------------------------------------------------------------
@@ -226,11 +263,68 @@ async def run_code(agent_id: str, req: RunCodeRequest) -> Any:
     dependencies=[Depends(require_server_token)],
 )
 async def open_app(agent_id: str, req: OpenAppRequest) -> Any:
-    """
-    Startet eine Anwendung im Hintergrund auf dem Ziel-Agent.
-    Gibt die PID des gestarteten Prozesses zurück.
-    """
+    """Startet eine Anwendung im Hintergrund. Gibt die PID zurück."""
     return await _dispatch(agent_id, "open_app", req.model_dump(), timeout=15.0)
+
+
+@app.post(
+    "/agents/{agent_id}/read_file",
+    summary="Datei auf einem Agent lesen",
+    dependencies=[Depends(require_server_token)],
+)
+async def read_file(agent_id: str, req: ReadFileRequest) -> Any:
+    """Liest den Inhalt einer Datei (max. 5 MB). Gibt content und size zurück."""
+    return await _dispatch(agent_id, "read_file", req.model_dump(), timeout=15.0)
+
+
+@app.post(
+    "/agents/{agent_id}/write_file",
+    summary="Datei auf einem Agent schreiben",
+    dependencies=[Depends(require_server_token)],
+)
+async def write_file(agent_id: str, req: WriteFileRequest) -> Any:
+    """Schreibt oder hängt Inhalt an eine Datei an. Erstellt Verzeichnisse automatisch."""
+    return await _dispatch(agent_id, "write_file", req.model_dump(), timeout=15.0)
+
+
+@app.post(
+    "/agents/{agent_id}/list_directory",
+    summary="Verzeichnis auf einem Agent auflisten",
+    dependencies=[Depends(require_server_token)],
+)
+async def list_directory(agent_id: str, req: ListDirectoryRequest) -> Any:
+    """Listet Dateien und Unterverzeichnisse auf. Optional mit Glob-Pattern filtern."""
+    return await _dispatch(agent_id, "list_directory", req.model_dump(), timeout=15.0)
+
+
+@app.get(
+    "/agents/{agent_id}/system_info",
+    summary="Systeminformationen eines Agents abrufen",
+    dependencies=[Depends(require_server_token)],
+)
+async def system_info(agent_id: str) -> Any:
+    """Gibt CPU-, RAM-, Disk- und Plattforminformationen des Agents zurück."""
+    return await _dispatch(agent_id, "get_system_info", {}, timeout=10.0)
+
+
+@app.post(
+    "/agents/{agent_id}/screenshot",
+    summary="Screenshot auf einem Agent erstellen",
+    dependencies=[Depends(require_server_token)],
+)
+async def screenshot(agent_id: str, req: ScreenshotRequest) -> Any:
+    """Erstellt einen Screenshot und gibt ihn als Base64-kodiertes Bild zurück."""
+    return await _dispatch(agent_id, "screenshot", req.model_dump(), timeout=10.0)
+
+
+@app.post(
+    "/agents/{agent_id}/processes",
+    summary="Prozessliste eines Agents abrufen",
+    dependencies=[Depends(require_server_token)],
+)
+async def get_processes(agent_id: str, req: ProcessesRequest) -> Any:
+    """Gibt laufende Prozesse zurück. Optional nach Name filtern."""
+    return await _dispatch(agent_id, "get_processes", req.model_dump(), timeout=10.0)
 
 
 # ---------------------------------------------------------------------------

@@ -1,0 +1,39 @@
+# Secrets – niemals einchecken
+.env
+.env.local
+.env.*.local
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.Python
+
+# Virtuelle Umgebungen
+.venv/
+venv/
+env/
+
+# KI-Modelle (groß, nicht ins Repo)
+models/
+*.onnx
+*.bin
+*.pt
+
+# Whisper-Cache
+~/.cache/whisper/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Logs
+*.log
+
+# Build-Artefakte
+dist/
+build/
+*.egg-info/
