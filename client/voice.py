@@ -12,16 +12,20 @@ Ablauf:
   8. Zurück zu Schritt 2
 
 Konfiguration via .env:
-    OPENCLAW_URL       – Basis-URL des Neo-Servers
-    OPENCLAW_TOKEN     – Bearer-Token für Neo
-    WAKE_WORD_MODEL    – openwakeword-Modell (default: hey_neo)
-                         Für Custom-Modelle: Pfad zur .onnx-Datei
-                         oder Name eines vorinstallierten Modells.
-                         Fallback auf "hey_jarvis" wenn kein Modell geladen werden kann.
-    WHISPER_MODEL      – faster-whisper Modell (default: base)
-    WHISPER_LANGUAGE   – Sprache für Transkription (default: de)
-    PIPER_VOICE        – Pfad zur Piper .onnx-Datei (z. B. de_DE-thorsten-medium.onnx)
-    MIC_DEVICE         – sounddevice-Gerät-Index oder -Name (leer = Standard)
+    OPENCLAW_URL           – Basis-URL des Neo-Servers
+    OPENCLAW_TOKEN         – Bearer-Token für Neo
+    WAKE_WORD_MODEL        – openwakeword-Modell (default: hey_neo)
+                             Für Custom-Modelle: Pfad zur .onnx-Datei
+                             oder Name eines vorinstallierten Modells.
+                             Fallback auf "hey_jarvis" wenn kein Modell geladen werden kann.
+    WHISPER_MODEL          – faster-whisper Modell (default: base)
+    WHISPER_LANGUAGE       – Sprache für Transkription (default: de)
+    WHISPER_BEAM_SIZE      – Beam-Size für Whisper (default: 2, weniger = schneller)
+    PIPER_VOICE            – Pfad zur Piper .onnx-Datei (z. B. de_DE-thorsten-medium.onnx)
+    MIC_DEVICE             – sounddevice-Gerät-Index oder -Name (leer = Standard)
+    VAD_AGGRESSIVENESS     – webrtcvad Aggressivität 0–3 (default: 1, niedriger = empfindlicher)
+    SILENCE_THRESHOLD      – RMS-Energie-Schwelle für Stille-Fallback (default: 0.003)
+    SILENCE_DURATION_S     – Sekunden Stille bis Aufnahme endet (default: 1.5)
 """
 
 import asyncio
@@ -48,17 +52,19 @@ OPENCLAW_TOKEN: str = os.getenv("OPENCLAW_TOKEN", "")
 WAKE_WORD_MODEL: str = os.getenv("WAKE_WORD_MODEL", "hey_neo")
 WHISPER_MODEL: str = os.getenv("WHISPER_MODEL", "base")
 WHISPER_LANGUAGE: str = os.getenv("WHISPER_LANGUAGE", "de")
+WHISPER_BEAM_SIZE: int = int(os.getenv("WHISPER_BEAM_SIZE", "2"))
 PIPER_VOICE: str = os.getenv("PIPER_VOICE", "")
 MIC_DEVICE_RAW: str = os.getenv("MIC_DEVICE", "").strip()
 MIC_DEVICE: Optional[Any] = int(MIC_DEVICE_RAW) if MIC_DEVICE_RAW.isdigit() else (MIC_DEVICE_RAW or None)
+VAD_AGGRESSIVENESS: int = max(0, min(3, int(os.getenv("VAD_AGGRESSIVENESS", "1"))))
 
-# Audio-Parameter
+# Audio-Parameter (via .env überschreibbar)
 _SAMPLE_RATE: int = 16000
 _CHANNELS: int = 1
-_CHUNK_FRAMES: int = 1280          # 80 ms bei 16 kHz – openwakeword-Fenster
-_SILENCE_THRESHOLD: float = 0.01  # RMS-Schwelle für Stille
-_SILENCE_DURATION_S: float = 1.5  # Sekunden Stille → Aufnahme stopp
-_MAX_RECORD_S: float = 30.0       # Maximale Aufnahmedauer
+_CHUNK_FRAMES: int = 1280  # 80 ms bei 16 kHz – openwakeword-Fenster
+_SILENCE_THRESHOLD: float = float(os.getenv("SILENCE_THRESHOLD", "0.003"))
+_SILENCE_DURATION_S: float = float(os.getenv("SILENCE_DURATION_S", "1.5"))
+_MAX_RECORD_S: float = 30.0
 
 log = logging.getLogger("voice")
 
@@ -249,7 +255,14 @@ class SilenceDetector:
     """
     Erkennt Stille in Audio-Chunks.
     Nutzt webrtcvad falls verfügbar, sonst einfache Energie-Schwelle.
+
+    Verbesserungen gegenüber naiver Implementierung:
+    - Gleitendes 30ms-Fenster über den 80ms-Chunk (statt nur erste 480 Samples)
+    - Konfigurierbare VAD-Aggressivität via VAD_AGGRESSIVENESS (0–3)
+    - Konfigurierbare RMS-Schwelle via SILENCE_THRESHOLD
     """
+
+    _VAD_FRAME_SAMPLES: int = 480  # 30 ms @ 16 kHz – webrtcvad-Anforderung
 
     def __init__(self) -> None:
         self._vad = None
@@ -258,25 +271,34 @@ class SilenceDetector:
         try:
             import webrtcvad  # type: ignore
 
-            self._vad = webrtcvad.Vad(2)  # Aggressivitätsstufe 2
+            self._vad = webrtcvad.Vad(VAD_AGGRESSIVENESS)
             self._use_vad = True
-            log.debug("webrtcvad wird für Stille-Erkennung verwendet.")
+            log.debug("webrtcvad Aggressivität %d für Stille-Erkennung.", VAD_AGGRESSIVENESS)
         except ImportError:
-            log.debug("webrtcvad nicht verfügbar – nutze Energie-Schwelle.")
+            log.debug("webrtcvad nicht verfügbar – nutze Energie-Schwelle (%.4f).", _SILENCE_THRESHOLD)
 
     def is_speech(self, audio_chunk: np.ndarray) -> bool:
         """
         Gibt True zurück wenn der Chunk Sprache enthält.
 
+        Wertet alle 30ms-Sub-Frames des übergebenen Chunks aus (sliding window),
+        sodass auch bei 80ms-Chunks keine Sprach-Information verloren geht.
+
         Args:
-            audio_chunk: float32 Array, 16 kHz, ~30 ms (480 Samples)
+            audio_chunk: float32-Array, 16 kHz, beliebige Länge (typisch 1280 Samples = 80 ms)
         """
         if self._use_vad and self._vad is not None:
             try:
                 pcm = (audio_chunk * 32767).astype(np.int16)
-                # webrtcvad erwartet genau 480 Samples bei 16 kHz / 30 ms
-                chunk_30ms = pcm[:480] if len(pcm) >= 480 else np.pad(pcm, (0, 480 - len(pcm)))
-                return self._vad.is_speech(chunk_30ms.tobytes(), sample_rate=_SAMPLE_RATE)
+                step = self._VAD_FRAME_SAMPLES
+                # Alle 30ms-Fenster prüfen – reicht einer aus → Sprache erkannt
+                for i in range(0, len(pcm), step):
+                    frame = pcm[i : i + step]
+                    if len(frame) < step:
+                        frame = np.pad(frame, (0, step - len(frame)))
+                    if self._vad.is_speech(frame.tobytes(), sample_rate=_SAMPLE_RATE):
+                        return True
+                return False
             except Exception:
                 pass
         # Fallback: RMS-Energie
@@ -327,7 +349,10 @@ class VoiceProcessor:
             segments, _ = self._whisper.transcribe(
                 audio,
                 language=WHISPER_LANGUAGE,
-                beam_size=5,
+                beam_size=WHISPER_BEAM_SIZE,
+                vad_filter=True,                 # Stille-Segmente überspringen → weniger Halluzinationen
+                vad_parameters={"min_silence_duration_ms": 500},
+                condition_on_previous_text=False, # Verhindert Fehlerfortpflanzung bei kurzen Anfragen
             )
             text = " ".join(seg.text.strip() for seg in segments).strip()
             log.info("Transkription: %r", text)
@@ -382,7 +407,11 @@ class VoiceProcessor:
 
     def record_until_silence(self, audio_queue: "queue.Queue[np.ndarray]") -> np.ndarray:
         """
-        Liest Audio aus dem Queue bis 1,5 s Stille erkannt werden.
+        Liest Audio aus dem Queue bis _SILENCE_DURATION_S Stille erkannt werden.
+
+        Hysterese: Erst nach 2 aufeinanderfolgenden Sprach-Chunks wird der
+        Stille-Counter zurückgesetzt. Das verhindert, dass kurze Hintergrundgeräusche
+        eine lange Aufnahme erzwingen.
 
         Args:
             audio_queue: Queue mit float32-Chunks vom Mikrofon-Callback
@@ -392,6 +421,7 @@ class VoiceProcessor:
         """
         recorded: list[np.ndarray] = []
         silent_chunks: int = 0
+        speech_run: int = 0  # aufeinanderfolgende Sprach-Frames für Hysterese
         max_silent = int(_SILENCE_DURATION_S * _SAMPLE_RATE / _CHUNK_FRAMES)
         max_chunks = int(_MAX_RECORD_S * _SAMPLE_RATE / _CHUNK_FRAMES)
         chunk_count: int = 0
@@ -408,8 +438,13 @@ class VoiceProcessor:
             chunk_count += 1
 
             if self._silence_detector.is_speech(chunk):
-                silent_chunks = 0
+                speech_run += 1
+                # Erst 2 aufeinanderfolgende Sprach-Chunks resetten den Counter (Hysterese)
+                if speech_run >= 2:
+                    silent_chunks = 0
+                    speech_run = 0
             else:
+                speech_run = 0
                 silent_chunks += 1
                 if silent_chunks >= max_silent:
                     log.debug("Stille erkannt nach %d Chunks.", chunk_count)
